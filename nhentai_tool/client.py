@@ -7,15 +7,17 @@ import time
 import logging
 from typing import Optional
 
+import urllib3
+
 import requests
 
-from .models import NhentaiGallery, parse_gallery
+from .models import NhentaiGallery, parse_gallery, parse_search_item
 
 logger = logging.getLogger(__name__)
 
 _BASE_URL = "https://nhentai.net"
-_SEARCH_URL = f"{_BASE_URL}/api/galleries/search"
-_GALLERY_URL = f"{_BASE_URL}/api/gallery"
+_SEARCH_URL = f"{_BASE_URL}/api/v2/search"
+_GALLERY_URL = f"{_BASE_URL}/api/v2/galleries"
 
 _DEFAULT_HEADERS = {
     "User-Agent": (
@@ -35,15 +37,21 @@ class NhentaiClient:
         rate_limit: float = 1.5,
         max_retries: int = 3,
         cookies: Optional[dict] = None,
+        verify_ssl: bool = True,
     ) -> None:
         """
         参数:
             rate_limit:  每次请求之间的最小间隔（秒），默认 1.5 秒
             max_retries: 遇到 429/5xx 时的最大重试次数，默认 3 次
             cookies:     可选的 cookies dict，用于绕过 Cloudflare 等防护
+            verify_ssl:  是否验证 SSL 证书，默认 True；如遇 SSL 错误可设为 False
         """
         self.rate_limit = rate_limit
         self.max_retries = max_retries
+        self.verify_ssl = verify_ssl
+
+        if not verify_ssl:
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
         self._session = requests.Session()
         self._session.headers.update(_DEFAULT_HEADERS)
@@ -75,7 +83,7 @@ class NhentaiClient:
         for attempt in range(self.max_retries + 1):
             try:
                 self._last_request_time = time.monotonic()
-                resp = self._session.get(url, params=params, timeout=30)
+                resp = self._session.get(url, params=params, timeout=30, verify=self.verify_ssl)
 
                 if resp.status_code == 200:
                     return resp.json()
@@ -132,7 +140,7 @@ class NhentaiClient:
 
         data = self._request(_SEARCH_URL, params=params)
 
-        galleries = [parse_gallery(item) for item in data.get("result", [])]
+        galleries = [parse_search_item(item) for item in data.get("result", [])]
         total_pages: int = int(data.get("num_pages", 1))
         return galleries, total_pages
 
