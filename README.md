@@ -1,25 +1,31 @@
 # nhentai-tool
 
-nhentai API 的 Python 封装工具，提供搜索、过滤、排序、导出和下载功能。
+nhentai v2 API 的 Python 封装工具，提供搜索、过滤、排序、去重、导出和批量下载功能。
 
 ## 功能特性
 
-- **API 客户端**：内置请求限速、自动重试（429/5xx 指数退避）、Session 复用
+- **v2 API 客户端**：基于 nhentai v2 API，内置请求限速、自动重试（429/5xx 指数退避）、Session 复用
 - **结构化数据模型**：将 API 返回的 JSON 解析为 Python dataclass 对象
+- **多 CDN 支持**：轮询 i1-i4 CDN 服务器，分散请求压力
+- **多线程并发下载**：基于 ThreadPoolExecutor 的并发下载，支持断点续传
 - **丰富的过滤引擎**：支持按语言、标签、页数、收藏数、日期、艺术家、类型等维度过滤
-- **去重**：按 ID 去重或按标题相似度去重
+- **智能去重**：按 ID/标题相似度去重，支持合订本（Ch. X-Y）识别与合并
 - **排序**：按收藏数、页数、日期、ID 排序
 - **多种输出方式**：控制台摘要、JSON 导出、URL 列表导出、图片批量下载
+- **独立脚本**：提供开箱即用的下载脚本和去重脚本
 
 ## 项目结构
 
 ```
 nhentai_tool/
-├── __init__.py    # 包入口，导出所有公开 API
-├── client.py      # API 客户端（HTTP 请求、限速、重试）
-├── models.py      # 数据模型（NhentaiGallery, NhentaiImage）与 JSON 解析
-├── filters.py     # 过滤引擎（去重、语言、标签、页数、收藏、日期、排序、管道）
-└── main.py        # 主程序入口（搜索→过滤→输出 完整流程示例）
+├── __init__.py      # 包入口，导出所有公开 API
+├── client.py        # v2 API 客户端（HTTP 请求、限速、重试）
+├── models.py        # 数据模型（NhentaiGallery, NhentaiImage）与 JSON 解析、多 CDN 轮询
+├── filters.py       # 过滤引擎（去重、语言、标签、页数、收藏、日期、排序、管道）
+└── main.py          # 主程序入口（搜索→过滤→输出 完整流程示例）
+
+run_download.py      # 独立下载脚本（支持单个 ID / JSON 批量下载）
+run_dedup.py         # 独立去重脚本（合订本识别、标题归一化、相似度去重）
 ```
 
 ## 安装
@@ -46,6 +52,28 @@ pip install -r requirements.txt
 python -m nhentai_tool.main
 ```
 
+### 使用独立下载脚本
+
+```bash
+# 下载单个作品
+python run_download.py 428809
+
+# 下载单个作品到指定目录，使用 8 线程
+python run_download.py 428809 -o output/downloads -w 8
+
+# 从 JSON 文件批量下载（JSON 格式: [{"id": 123456}, {"id": 789012}, ...]）
+python run_download.py output/search_results.json -o output/作者名 -w 4
+```
+
+### 使用独立去重脚本
+
+```bash
+# 对搜索结果进行智能去重（合订本识别、标题归一化）
+python run_dedup.py
+# 输入: output/search_results.json
+# 输出: output/deduped_results.json + output/dedup_log.txt
+```
+
 ### 作为库导入使用
 
 ```python
@@ -56,6 +84,7 @@ client = NhentaiClient(
     rate_limit=1.5,      # 请求间隔（秒）
     max_retries=3,       # 最大重试次数
     cookies=None,        # 可选：{"cf_clearance": "..."} 用于绕过 Cloudflare
+    verify_ssl=False,    # nhentai 当前需要禁用 SSL 验证
 )
 
 # 2. 搜索
@@ -158,25 +187,29 @@ export_json(filtered, "output/results.json")
 # 导出所有图片 URL 列表
 export_urls(filtered, "output/urls.txt")
 
-# 批量下载图片到本地
-download_galleries(client, filtered, "output/downloads", image_rate_limit=0.5)
+# 批量下载图片到本地（多线程并发 + CDN 轮询）
+download_galleries(client, filtered, "output/downloads", max_workers=4)
 ```
+
+### 下载特性
+
+- **多线程并发**：默认 4 线程，通过 `max_workers` 参数调整
+- **多 CDN 轮询**：自动轮询 i1-i4.nhentai.net 服务器，分散请求压力
+- **断点续传**：自动跳过已存在的文件
+- **自动重试**：每张图片失败后自动重试 3 次（指数退避）
+- **文件名安全**：Windows 非法字符自动替换为 `_`
 
 ### 下载目录结构
 
 ```
 output/downloads/
-├── 123456_作品标题/
-│   ├── 001.jpg
-│   ├── 002.jpg
+├── [Artist] Title of the Work/
+│   ├── 0001.jpg
+│   ├── 0002.jpg
 │   └── ...
-└── 789012_另一个作品/
+└── [Artist] Another Work/
     └── ...
 ```
-
-- 自动跳过已存在的文件（支持断点续传）
-- 文件名中的 Windows 非法字符会被替换为 `_`
-- 目录名格式：`{id}_{标题前80字符}`
 
 ## 数据模型
 
@@ -216,6 +249,14 @@ output/downloads/
 
 ## 客户端配置
 
+### SSL 验证
+
+nhentai 当前存在 SSL 证书问题，建议创建客户端时禁用 SSL 验证：
+
+```python
+client = NhentaiClient(verify_ssl=False)
+```
+
 ### Cloudflare 绕过
 
 如果遇到 Cloudflare 防护，可以从浏览器中提取 `cf_clearance` cookie 后传入：
@@ -227,7 +268,27 @@ client = NhentaiClient(cookies={"cf_clearance": "你的cookie值"})
 ### 限速设置
 
 - `rate_limit`：API 请求间隔，默认 1.5 秒
-- `image_rate_limit`（下载时）：图片下载间隔，默认 0.5 秒
+
+## 去重脚本 (run_dedup.py)
+
+`run_dedup.py` 针对同一作者的搜索结果进行智能去重，支持以下规则：
+
+1. **合订本识别**：识别标题中的 `Ch. X` / `Ch. X-Y` 章节标记
+2. **标题归一化**：去除作者名、翻译组名、版本标记等，提取基础作品名
+3. **分组去重**：按 (基础作品名, 语言) 分组
+   - 存在完整版时，移除所有单章节条目
+   - 仅有单章节时，保留章节范围最大的版本
+   - 页数相近（≥85%）的多个版本保留待人工确认
+4. **输出**：去重后的 JSON + 详细决策日志
+
+## API 说明
+
+本工具使用 nhentai v2 API：
+
+| 端点 | 说明 |
+|------|------|
+| `GET /api/v2/search?query=...&sort=...&page=...` | 搜索作品 |
+| `GET /api/v2/galleries/{id}` | 获取作品详情 |
 
 ## 许可证
 

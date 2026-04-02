@@ -15,9 +15,16 @@ EXT_MAP: dict[str, str] = {
     "a": "avif",
 }
 
-# CDN 域名
-_IMAGE_CDN = "https://i1.nhentai.net"
-_THUMB_CDN = "https://t1.nhentai.net"
+# CDN 域名（支持 i1-i4 / t1-t4 多服务器）
+_IMAGE_CDN_SERVERS = [f"https://i{n}.nhentai.net" for n in range(1, 5)]
+_THUMB_CDN_SERVERS = [f"https://t{n}.nhentai.net" for n in range(1, 5)]
+_IMAGE_CDN = _IMAGE_CDN_SERVERS[0]  # 默认，向后兼容
+_THUMB_CDN = _THUMB_CDN_SERVERS[0]
+
+
+def get_image_cdn(page_num: int = 0) -> str:
+    """按页码轮询选择 CDN 服务器，分散请求到 i1-i4"""
+    return _IMAGE_CDN_SERVERS[page_num % len(_IMAGE_CDN_SERVERS)]
 
 
 @dataclass

@@ -6,7 +6,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
 
@@ -14,7 +17,7 @@ import requests
 
 from .client import NhentaiClient
 from .filters import FilterPipeline
-from .models import NhentaiGallery, gallery_to_dict
+from .models import NhentaiGallery, NhentaiImage, gallery_to_dict, get_image_cdn
 
 logging.basicConfig(
     level=logging.INFO,
@@ -65,23 +68,47 @@ def export_urls(galleries: list[NhentaiGallery], filepath: str | os.PathLike) ->
     print(f"[导出] URL 列表已保存至: {filepath}  ({total} 条)")
 
 
+def _download_one_image(
+    session: requests.Session,
+    img: NhentaiImage,
+    filepath: Path,
+    verify_ssl: bool,
+) -> tuple[int, bool, str]:
+    """下载单张图片，返回 (page_num, success, message)"""
+    cdn = get_image_cdn(img.page_num)
+    url = re.sub(r'https://i\d\.nhentai\.net', cdn, img.url)
+
+    for attempt in range(3):
+        try:
+            resp = session.get(url, timeout=30, verify=verify_ssl)
+            resp.raise_for_status()
+            filepath.write_bytes(resp.content)
+            size_kb = len(resp.content) / 1024
+            return img.page_num, True, f"{size_kb:.0f} KB"
+        except Exception as e:
+            if attempt < 2:
+                time.sleep(2 ** (attempt + 1))
+            else:
+                return img.page_num, False, str(e)
+    return img.page_num, False, "unknown error"
+
+
 def download_galleries(
     client: NhentaiClient,
     galleries: list[NhentaiGallery],
     output_dir: str | os.PathLike,
-    image_rate_limit: float = 0.5,
+    max_workers: int = 4,
 ) -> None:
     """
-    将过滤后的作品图片下载到本地。
+    将过滤后的作品图片并发下载到本地。
 
     目录结构: output_dir/{id}_{safe_title}/{page_num:03d}.{ext}
-    自动跳过已存在的文件。
+    自动跳过已存在的文件，支持多线程并发和多 CDN 轮询。
     """
     output_dir = Path(output_dir)
-    session = client.session  # 复用已有 Session（含 cookies / headers）
+    session = client.session
 
     for g in galleries:
-        # 构造安全目录名（去除 Windows 非法字符）
         safe_title = "".join(
             c if c not in r'\/:*?"<>|' else "_"
             for c in (g.title_pretty or g.title_english or str(g.id))
@@ -90,20 +117,43 @@ def download_galleries(
         gallery_dir.mkdir(parents=True, exist_ok=True)
 
         print(f"\n[下载] ID={g.id}  标题: {g.title_pretty or g.title_english}")
+
+        tasks: list[tuple[NhentaiImage, Path]] = []
         for img in g.images:
             filename = f"{img.page_num:03d}.{img.extension}"
             dest = gallery_dir / filename
-            if dest.exists():
-                continue  # 跳过已存在文件
+            if not dest.exists():
+                tasks.append((img, dest))
 
-            try:
-                time.sleep(image_rate_limit)
-                resp = session.get(img.url, timeout=30)
-                resp.raise_for_status()
-                dest.write_bytes(resp.content)
-                print(f"  [{img.page_num:>3}/{g.num_pages}] {filename}")
-            except requests.exceptions.RequestException as exc:
-                print(f"  [错误] 下载 {img.url} 失败: {exc}")
+        if not tasks:
+            print(f"  所有 {g.num_pages} 页已存在，跳过")
+            continue
+
+        completed = 0
+        failed = []
+        lock = threading.Lock()
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(
+                    _download_one_image, session, img, filepath, client.verify_ssl
+                ): img.page_num
+                for img, filepath in tasks
+            }
+            for future in as_completed(futures):
+                page_num, success, msg = future.result()
+                with lock:
+                    if success:
+                        completed += 1
+                        print(f"  [{completed}/{len(tasks)}] p{page_num:03d} ({msg})")
+                    else:
+                        failed.append(page_num)
+                        print(f"  [错误] p{page_num:03d}: {msg}")
+
+        status = f"{completed}/{len(tasks)}"
+        if failed:
+            status += f" (失败: {sorted(failed)})"
+        print(f"  完成: {status}")
 
     print("\n[下载] 全部完成")
 

@@ -1,7 +1,7 @@
 # nhentai_tool 包初始化
 # 导出核心类和函数，方便外部直接使用
 
-from .models import NhentaiGallery, NhentaiImage, parse_gallery, parse_search_item, gallery_to_dict
+from .models import NhentaiGallery, NhentaiImage, parse_gallery, parse_search_item, gallery_to_dict, get_image_cdn
 from .client import NhentaiClient
 from .filters import (
     FilterPipeline,
